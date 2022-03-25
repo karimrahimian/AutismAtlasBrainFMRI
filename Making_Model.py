@@ -22,6 +22,11 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from nilearn import datasets
 from nilearn import plotting
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import RandomizedSearchCV, RepeatedStratifiedKFold
+import random
+from scipy.stats import loguniform
+
 
 from collections import Counter
 #************************Load initial Files**************************
@@ -777,9 +782,9 @@ class AutismClassifiers():
             classifier_names = classifier.Get_Classifier_Names()
 
             abide_atlas = ['rois_aal','rois_cc200','rois_cc400','rois_dosenbach160','rois_ez','rois_ho','rois_tt']
-            nilearn_atlas = ['croddock','difumo128','difumo256','difumo512','hard','msdl','rsmith70','smith70']
+            nilearn_atlas = ['croddock','difumo128','difumo256','difumo512','hard','msdl','rsmith70']
 
-            atlas_all = ['rois_aal','rois_cc200','rois_cc400','rois_dosenbach160','rois_ez','rois_ho','rois_tt','croddock','difumo128','difumo256','difumo512','hard','msdl','rsmith70','smith70']
+            atlas_all = ['rois_aal','rois_cc200','rois_cc400','rois_dosenbach160','rois_ez','rois_ho','rois_tt','croddock','difumo128','difumo256','difumo512','hard','msdl','rsmith70']
 
             accuracy = np.zeros((len(atlas_all), len(site_names)))
             precision = np.zeros((len(atlas_all), len(site_names)))
@@ -812,7 +817,7 @@ class AutismClassifiers():
                 df5 = pd.DataFrame(specificity, index=atlas_all, columns=site_names)
 
                 filename = classifier_names[0]
-                with pd.ExcelWriter('result/Atlas_Site/Cross_{}.xls'.format(filename)) as writer:
+                with pd.ExcelWriter('result/Cross_Atlas_{}.xls'.format(filename)) as writer:
                     df1.to_excel(writer, sheet_name='Accuracy')
                     df2.to_excel(writer, sheet_name='Precision')
                     df3.to_excel(writer, sheet_name='Recall')
@@ -842,27 +847,53 @@ class AutismClassifiers():
                 df3 = pd.DataFrame(recall, index=atlas_all, columns=site_names)
                 df4 = pd.DataFrame(auc, index=atlas_all, columns=site_names)
                 df5 = pd.DataFrame(specificity, index=atlas_all, columns=site_names)
-
                 filename = classifier_names[0]
-                with pd.ExcelWriter('result/Atlas_Site/Cross_{}.xls'.format(filename)) as writer:
+
+                with pd.ExcelWriter('result/Cross_Atlas_{}.xls'.format(filename)) as writer:
                     df1.to_excel(writer, sheet_name='Accuracy')
                     df2.to_excel(writer, sheet_name='Precision')
                     df3.to_excel(writer, sheet_name='Recall')
                     df4.to_excel(writer, sheet_name='Auc')
                     df5.to_excel(writer, sheet_name='Specificity')
 
-class FeatureImportance():
-    def AppyThresould(self, coef, thresould, size):
+class ConnectivityMap():
+    def AppyThresould(self, coefs, thresould, size):
+        from scipy import stats
+        import math
+
         weights = np.zeros((size, size))
+        pvalues = np.zeros((size, size, coefs.shape[0]))
+
         k = 0
         for i in range(size):
             for j in range(i):
-                value =(coef[k])
+                pvalues[i,j,:] = coefs[:,k]
+                pvalues[j,i,:] = coefs[:,k]
+                value = np.abs(np.mean(coefs[:,k]))
+
                 weights[j, i] = value
                 weights[i, j] = value
-                print("{},{}:{}".format(i, j, k))
+                #print("{},{}:{}".format(i, j, k))
                 k += 1
+        pv = np.zeros((size, size))
+        for i in range(size):
+            for j in range(size):
+                if (i!=j):
+                    temp = stats.ttest_ind(pvalues[i,0,:] , pvalues[i,j,:])
+                    pv[i,j] = temp[1]
+                    if (pv[i,j]>0.05):
+                        #print ("{},{}".format(i,j))
+                        weights[i,j]=0
+
         return weights
+
+    def Vectorize_Matrix(self,X):
+        data = []
+        for i in range(X.shape[0]):
+            for j in range(i):
+                data.append(X[i,j])
+        return np.array(data,dtype=np.bool)
+
     def SaveWeights(self,heatmap):
         difumo = datasets.fetch_atlas_difumo(dimension=128, resolution_mm=3, data_dir="Atlas/")
 
@@ -883,7 +914,42 @@ class FeatureImportance():
         # sd_model = sd.Logit(Y, sm.add_constant(x)).fit(disp=0)
         # print(sd_model.pvalues)
         # sd_model.summary()
+    def Classify(self,rowVector,usingCombat=True):
+        preproc = Preprocess()
+        atlas_name = "AtlasExtracted/NilearnNew/difumo128/*"
+        X, Y, covars = preproc.Load_Atlas_Data_NiLearn(atlas_name, 1, 70, applythresould=False)
+        categorical_cols = ['gender', 'age']
+        batch_col = 'batch'
+        if (usingCombat==True):
+            X = np.transpose(X)
+            data_combat = neuroCombat(dat=X, covars=covars, batch_col=batch_col, categorical_cols=categorical_cols)["data"]
+            X = np.transpose(data_combat)
+        lr = LogisticRegression(C= 0.000339, penalty= 'l2', solver= 'lbfgs')
+        rndlist  = [0,2,7,10,11,14,17,20,21,22,24,26,27,29,35,38,39,41,42,49,50,51,54,56,59,71,72,78,80,83,93,97,104,108,115,118,120,123,124,126,127,130,131,139,142,144,146,150,153,159]
+        accuracys = []
+        precisions = []
+        f1Scores = []
+        recalls = []
+        specificitys = []
 
+        for item in rndlist:
+            X_train, X_test, y_train, y_test = train_test_split(X[:,rowVector], Y, test_size = 0.1, random_state = item)
+            lr.fit(X_train, y_train)
+            y_pred = lr.predict(X_test)
+
+            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+            specificity = tn / (tn + fp)
+
+            accuracys.append(accuracy_score(y_test,y_pred))
+            precisions.append(precision_score(y_test, y_pred, average='macro',labels=np.unique(y_pred)))
+            f1Scores.append (f1_score(y_test, y_pred, average='macro',labels=np.unique(y_pred)))
+            recalls.append (recall_score(y_test, y_pred, average="weighted"))
+            specificitys.append(specificity)
+        print ("Accuracy {}".format(np.mean(accuracys)))
+        print ("precisions {}".format(np.mean(precisions)))
+        print ("f1Scores {}".format(np.mean(f1Scores)))
+        print ("recalls {}".format(np.mean(recalls)))
+        print ("specificitys {}".format(np.mean(specificitys)))
 
     def Get_FeatureImportance_Difumo(self,usingCombat =False, fromage=1, toage=70):
         preproc = Preprocess()
@@ -896,9 +962,46 @@ class FeatureImportance():
             X = np.transpose(X)
             data_combat = neuroCombat(dat=X, covars=covars, batch_col=batch_col, categorical_cols=categorical_cols)["data"]
             X = np.transpose(data_combat)
-        lr.fit(X, Y)
-        coef = lr.coef_[0]
-        weights = self.AppyThresould(coef, 0, 128)
+
+
+        coefs = []
+        space = dict()
+        space['solver'] = ['newton-cg', 'lbfgs', 'liblinear']
+        space['penalty'] = ['none', 'l1', 'l2', 'elasticnet']
+        space['C'] = loguniform(1e-5, 100)
+        lr = LogisticRegression(C= 0.000339, penalty= 'l2', solver= 'lbfgs')
+
+        rndlist  = [0,2,7,10,11,14,17,20,21,22,24,26,27,29,35,38,39,41,42,49,50,51,54,56,59,71,72,78,80,83,93,97,104,108,115,118,120,123,124,126,127,130,131,139,142,144,146,150,153,159]
+        accuracys = []
+        precisions = []
+        f1Scores = []
+        recalls = []
+        specificitys = []
+
+        for item in rndlist:
+            X_train, X_test, y_train, y_test = train_test_split(X, Y, test_size = 0.1, random_state = item)
+            lr.fit(X_train, y_train)
+            y_pred = lr.predict(X_test)
+
+            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+            specificity = tn / (tn + fp)
+
+            accuracys.append(accuracy_score(y_test,y_pred))
+            precisions.append(precision_score(y_test, y_pred, average='macro',labels=np.unique(y_pred)))
+            f1Scores.append (f1_score(y_test, y_pred, average='macro',labels=np.unique(y_pred)))
+            recalls.append (recall_score(y_test, y_pred, average="weighted"))
+            specificitys.append(specificity)
+            coefs.append(lr.coef_[0])
+
+        coefs = np.array(coefs)
+        weights = self.AppyThresould(coefs, 0, 128)
+
+        print ("Accuracy {}".format(np.mean(accuracys)))
+        print ("precisions {}".format(np.mean(precisions)))
+        print ("f1Scores {}".format(np.mean(f1Scores)))
+        print ("recalls {}".format(np.mean(recalls)))
+        print ("specificitys {}".format(np.mean(specificitys)))
+
         return weights
 
     def ApplyWeightMask(self,weights , connectivity):
@@ -913,7 +1016,16 @@ class FeatureImportance():
         # Find features with correlation greater than 0.95
         to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
         # Drop features
-
+    def KeepImportantFeature(self,correlation_Matrix ,thresould):
+        correlation_Matrix_Copy = np.abs(correlation_Matrix)
+        for i in range(correlation_Matrix.shape[0]):
+            for j in range(correlation_Matrix.shape[1]):
+                if (correlation_Matrix_Copy[i,j]<thresould):
+                    correlation_Matrix_Copy[i,j]=0
+                else:
+                    correlation_Matrix_Copy[i, j] = 1
+        rowVector = self.Vectorize_Matrix(correlation_Matrix_Copy)
+        return rowVector
     def FilterHeatMap(self,correlation_Matrix ,thresould):
         correlation_Matrix_Copy = np.abs(correlation_Matrix)
         keeped_indexes = []
@@ -923,26 +1035,16 @@ class FeatureImportance():
                 keeped_indexes.append(i)
         filteredHeatMap = correlation_Matrix[keeped_indexes,:]
         filteredHeatMap = filteredHeatMap[:,keeped_indexes]
+        index = np.where(np.abs(filteredHeatMap)<thresould)
+        filteredHeatMap[index]=0
         return filteredHeatMap , keeped_indexes
 
-    def Connectivity(self):
+    def Connectivity_All(self):
         preprocess = Preprocess()
         X,Y,Sex = preprocess.LoadSpecificAtlas("AtlasExtracted/NilearnNew/difumo128/*")
         difumo = datasets.fetch_atlas_difumo(dimension=128, resolution_mm=3, data_dir="Atlas/")
-
-        #autism_index = np.where(Y==1)
-        #health_index = np.where(Y==0)
-        #men_index = np.where(Sex=='M')
-        #women_index = np.where(Sex=='F')
-
-        #autisms = X[autism_index]
-        #healths =  X[health_index]
-
-        #mens = X[men_index]
-        #womens =  X[women_index]
-
         connectivity_all_mean = np.mean(X,0)
-        usingCombat =False
+        usingCombat =True
         fileName = ""
         if (usingCombat==True):
             fileName = "Combat"
@@ -950,39 +1052,104 @@ class FeatureImportance():
         weights = self.Get_FeatureImportance_Difumo(usingCombat)
         connectivity_all_mean = self.ApplyWeightMask(weights,connectivity_all_mean)
 
-        labels = [ (str(item[1][1:]).replace("'","")) for item in difumo.labels]
+        labels = []
+        yeo_labels =[]
+        for item in difumo.labels:
+            temp = item[1]
+            labels.append( str(temp).replace("'","")[1:])
+            temp = item[3]
+            yeo_labels.append(str(temp).replace("'","")[1:])
 
-        filterHeatMap, keepIndexes = self.FilterHeatMap(connectivity_all_mean,0.055)
+
+        rowVector = self.KeepImportantFeature(connectivity_all_mean,0.001)
+        count = np.where(rowVector==1)
+        print("Count = {}" .format(len(count[0])))
+        self.Classify(rowVector)
+        filterHeatMap, keepIndexes = self.FilterHeatMap(connectivity_all_mean,0.001)
+
         newLabels = np.array(labels)[keepIndexes]
+        newLabelsYeo = np.array(yeo_labels)[keepIndexes]
 
         mask = np.triu(np.ones_like(filterHeatMap))
-        sns.set(font_scale=0.7)
+        sns.set(font_scale=0.2)
 
         sns.heatmap(filterHeatMap,xticklabels=newLabels,yticklabels=newLabels,mask=mask)
-        plt.savefig("result/heatmapAll_{}.png".format(fileName),bbox_inches='tight')
+        plt.savefig("result/heatmapAll_{}.svg".format(fileName),bbox_inches='tight')
 
-        df = pd.DataFrame(filterHeatMap,index=newLabels,columns=newLabels)
+        df = pd.DataFrame(filterHeatMap,index=newLabelsYeo,columns=newLabels)
         df.to_excel("result/heatmapData_{}.xls".format(fileName))
 
         coordinates = plotting.find_probabilistic_atlas_cut_coords(maps_img=difumo.maps)
-
         plotting.plot_connectome(connectivity_all_mean, coordinates, edge_threshold="98%", title="",colorbar=True)
-        plt.savefig("result/connectivity_{}.svg".format(fileName))
+        plt.savefig("result/connectivity_{}.png".format(fileName))
 
-        view = plotting.view_connectome(connectivity_all_mean, coordinates, edge_threshold='90%')
+        view = plotting.view_connectome(connectivity_all_mean, coordinates, edge_threshold='98%')
         view.open_in_browser()
 
+    def Connectivity_Control(self):
+        preprocess = Preprocess()
+        X,Y,Age= preprocess.LoadSpecificAtlas("AtlasExtracted/NilearnNew/difumo128/*")
+        difumo = datasets.fetch_atlas_difumo(dimension=128, resolution_mm=3, data_dir="Atlas/")
+        healthIndex = np.where(Y==0)[0]
+        autismIndex = np.where(Y==1)[0]
+        connectivity_Health =np.mean(X[healthIndex],0)
+        connectivity_Autism =np.mean(X[autismIndex],0)
+
+
+        usingCombat =True
+        fileName = ""
+        if (usingCombat==True):
+            fileName = "Combat"
+
+        weights = self.Get_FeatureImportance_Difumo(usingCombat)
+
+        connectivity_Health = self.ApplyWeightMask(weights,connectivity_Health)
+        connectivity_Autism = self.ApplyWeightMask(weights,connectivity_Autism)
+
+        labels = []
+        yeo_labels =[]
+        for item in difumo.labels:
+            temp = item[1]
+            labels.append( str(temp).replace("'","")[1:])
+            temp = item[3]
+            yeo_labels.append(str(temp).replace("'","")[1:])
+
+
+        keepHealth = self.KeepImportantFeature(connectivity_Health,0.001)
+        count  = np.where(keepHealth==1)[0]
+        print ("Health keep features = {}".format(len(count)))
+
+        filterHealth, keepIndexesHealth = self.FilterHeatMap(connectivity_Health, 0.001)
+
+        newLabelsHealth = np.array(labels)[keepIndexesHealth]
+        newLabelsYeoHealth = np.array(yeo_labels)[keepIndexesHealth]
+
+        df = pd.DataFrame(filterHealth,index=newLabelsYeoHealth,columns=newLabelsHealth)
+        df.to_excel("result/heatmapDataHealth_{}.xls".format(fileName))
+
+
+        keepAutism = self.KeepImportantFeature(connectivity_Autism,0.001)
+        count  = np.where(keepAutism==1)[0]
+        print ("Autism keep features = {}".format(len(count)))
 
 
 
-#autism = AutismClassifiers()
-#autism.Classify_Atlas_Combat_FeatureImportance_Difumo("DiFumo128")
+        filterAutism, keepIndexesAutism = self.FilterHeatMap(connectivity_Autism,0.001)
 
-#autism.Classify_Atlas("Result",1,70)
-#autism.Classify_Atlas_With_Combat("Result",1,70)
-#autism.Classify_Atlas_Combat_FeatureImportance("feature importance",1,70)
-#autism.Classify_Atlas_Combat_FeatureImportance_Difumo("feature importance",1,70)
-#autism.Classify_Atlas_For_Each_Site()
+        newLabelsAutism = np.array(labels)[keepIndexesAutism]
+        newLabelsYeoAutism = np.array(yeo_labels)[keepIndexesAutism]
 
-feature = FeatureImportance()
-feature.Connectivity()
+        df = pd.DataFrame(filterAutism,index=newLabelsYeoAutism,columns=newLabelsAutism)
+        df.to_excel("result/heatmapDataAutism_{}.xls".format(fileName))
+
+
+autism = AutismClassifiers()
+
+
+autism.Classify_Atlas("Result",1,70)
+autism.Classify_Atlas_With_Combat("Result",1,70)
+autism.Classify_Atlas_For_Each_Site()
+
+connectivity = ConnectivityMap()
+connectivity.Connectivity_All()
+connectivity.Connectivity_Control()
