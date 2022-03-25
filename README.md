@@ -11,7 +11,7 @@ numpy
 seaborn
 matplotlib
  
-
+s
 
 
 1- To download data from ABIDE dataset please use the download_from_abide.py script. Please follow the guidelines for downloading specific derivatives.
