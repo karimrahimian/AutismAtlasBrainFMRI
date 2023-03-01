@@ -49,6 +49,10 @@ The results will saved in the result directory.
 
 The Connectivty.py provide some useful function to draw Chordmap.
 
+Atlas_Best is the python script file for find best classifier across all calssifier and atlas 
+
+Atlas_Download is the another python script for download atlas from ABIDE website. In this script there are some option to set which type of image shoukd be dowbload. For example you can set sex, site, modality and so on . . .
+
 
 
 
